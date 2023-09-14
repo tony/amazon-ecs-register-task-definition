@@ -37,10 +37,6 @@ jest.mock('aws-sdk', () => {
     };
 });
 
-const EXPECTED_DEFAULT_WAIT_TIME = 30;
-const EXPECTED_CODE_DEPLOY_DEPLOYMENT_READY_WAIT_TIME = 60;
-const EXPECTED_CODE_DEPLOY_TERMINATION_WAIT_TIME = 30;
-
 describe('Deploy to ECS', () => {
 
     beforeEach(() => {
@@ -114,106 +110,6 @@ describe('Deploy to ECS', () => {
                 }
             };
         });
-
-        mockCodeDeployCreateDeployment.mockImplementation(() => {
-            return {
-                promise() {
-                    return Promise.resolve({ deploymentId: 'deployment-1' });
-                }
-            };
-        });
-
-        mockCodeDeployGetDeploymentGroup.mockImplementation(() => {
-            return {
-                promise() {
-                    return Promise.resolve({
-                        deploymentGroupInfo: {
-                            blueGreenDeploymentConfiguration: {
-                                deploymentReadyOption: {
-                                    waitTimeInMinutes: EXPECTED_CODE_DEPLOY_DEPLOYMENT_READY_WAIT_TIME
-                                },
-                                terminateBlueInstancesOnDeploymentSuccess: {
-                                    terminationWaitTimeInMinutes: EXPECTED_CODE_DEPLOY_TERMINATION_WAIT_TIME
-                                }
-                            }
-                        }
-                    });
-                }
-            };
-        });
-
-        mockCodeDeployWaiter.mockImplementation(() => {
-            return {
-                promise() {
-                    return Promise.resolve({});
-                }
-            };
-        });
-    });
-
-    test('registers the task definition contents and updates the service', async () => {
-        await run();
-        expect(core.setFailed).toHaveBeenCalledTimes(0);
-        expect(mockEcsRegisterTaskDef).toHaveBeenNthCalledWith(1, { family: 'task-def-family'});
-        expect(core.setOutput).toHaveBeenNthCalledWith(1, 'task-definition-arn', 'task:def:arn');
-        expect(mockEcsDescribeServices).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            services: ['service-456']
-        });
-        expect(mockEcsUpdateService).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            service: 'service-456',
-            taskDefinition: 'task:def:arn',
-            forceNewDeployment: false
-        });
-        expect(mockEcsWaiter).toHaveBeenCalledTimes(0);
-        expect(core.info).toBeCalledWith("Deployment started. Watch this deployment's progress in the Amazon ECS console: https://console.aws.amazon.com/ecs/home?region=fake-region#/clusters/cluster-789/services/service-456/events");
-    });
-
-    test('registers the task definition contents and updates the service if deployment controller type is ECS', async () => {
-        mockEcsDescribeServices.mockImplementation(() => {
-            return {
-                promise() {
-                    return Promise.resolve({
-                        failures: [],
-                        services: [{
-                            status: 'ACTIVE',
-                            deploymentController: {
-                                type: 'ECS'
-                            }
-                        }]
-                    });
-                }
-            };
-        });
-
-        await run();
-        expect(core.setFailed).toHaveBeenCalledTimes(0);
-        expect(mockEcsRegisterTaskDef).toHaveBeenNthCalledWith(1, { family: 'task-def-family'});
-        expect(core.setOutput).toHaveBeenNthCalledWith(1, 'task-definition-arn', 'task:def:arn');
-        expect(mockEcsDescribeServices).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            services: ['service-456']
-        });
-        expect(mockEcsUpdateService).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            service: 'service-456',
-            taskDefinition: 'task:def:arn',
-            forceNewDeployment: false
-        });
-        expect(mockEcsWaiter).toHaveBeenCalledTimes(0);
-        expect(core.info).toBeCalledWith("Deployment started. Watch this deployment's progress in the Amazon ECS console: https://console.aws.amazon.com/ecs/home?region=fake-region#/clusters/cluster-789/services/service-456/events");
-    });
-
-    test('prints Chinese console domain for cn regions', async () => {
-        const originalRegion = config.region;
-        config.region = 'cn-fake-region';
-        await run();
-
-        expect(core.info).toBeCalledWith("Deployment started. Watch this deployment's progress in the Amazon ECS console: https://console.amazonaws.cn/ecs/home?region=cn-fake-region#/clusters/cluster-789/services/service-456/events");
-
-        // reset
-        config.region = originalRegion;
     });
 
     test('cleans null keys out of the task definition contents', async () => {
@@ -458,13 +354,10 @@ describe('Deploy to ECS', () => {
         expect(mockEcsRegisterTaskDef).toHaveBeenNthCalledWith(1, { family: 'task-def-family'});
     });
 
-    test('registers the task definition contents and creates a CodeDeploy deployment, waits for 30 minutes + deployment group wait time', async () => {
+    test('registers the task definition contents', async () => {
         core.getInput = jest
             .fn()
-            .mockReturnValueOnce('task-definition.json') // task-definition
-            .mockReturnValueOnce('service-456')         // service
-            .mockReturnValueOnce('cluster-789')         // cluster
-            .mockReturnValueOnce('TRUE');               // wait-for-service-stability
+            .mockReturnValueOnce('task-definition.json');  // task-definition
 
         mockEcsDescribeServices.mockImplementation(() => {
             return {
@@ -487,200 +380,6 @@ describe('Deploy to ECS', () => {
 
         expect(mockEcsRegisterTaskDef).toHaveBeenNthCalledWith(1, { family: 'task-def-family'});
         expect(core.setOutput).toHaveBeenNthCalledWith(1, 'task-definition-arn', 'task:def:arn');
-        expect(mockEcsDescribeServices).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            services: ['service-456']
-        });
-
-        expect(mockCodeDeployCreateDeployment).toHaveBeenNthCalledWith(1, {
-            applicationName: 'AppECS-cluster-789-service-456',
-            deploymentGroupName: 'DgpECS-cluster-789-service-456',
-            revision: {
-                revisionType: 'AppSpecContent',
-                appSpecContent: {
-                  content: JSON.stringify({
-                      Resources: [{
-                          TargetService: {
-                              Type: 'AWS::ECS::Service',
-                              Properties: {
-                                TaskDefinition: 'task:def:arn',
-                                LoadBalancerInfo: {
-                                    ContainerName: "web",
-                                    ContainerPort: 80
-                                }
-                              }
-                          }
-                      }]
-                    }),
-                  sha256: '0911d1e99f48b492e238d1284d8ddb805382d33e1d1fc74ffadf37d8b7e6d096'
-                }
-            }
-        });
-
-        expect(mockCodeDeployWaiter).toHaveBeenNthCalledWith(1, 'deploymentSuccessful', {
-            deploymentId: 'deployment-1',
-            $waiter: {
-                delay: 15,
-                maxAttempts: (
-                    EXPECTED_DEFAULT_WAIT_TIME +
-                    EXPECTED_CODE_DEPLOY_TERMINATION_WAIT_TIME +
-                    EXPECTED_CODE_DEPLOY_DEPLOYMENT_READY_WAIT_TIME
-                ) * 4
-            }
-        });
-
-        expect(mockEcsUpdateService).toHaveBeenCalledTimes(0);
-        expect(mockEcsWaiter).toHaveBeenCalledTimes(0);
-
-        expect(core.info).toBeCalledWith("Deployment started. Watch this deployment's progress in the AWS CodeDeploy console: https://console.aws.amazon.com/codesuite/codedeploy/deployments/deployment-1?region=fake-region");
-    });
-
-    test('registers the task definition contents and creates a CodeDeploy deployment, waits for 1 hour + deployment group\'s wait time', async () => {
-        core.getInput = jest
-            .fn()
-            .mockReturnValueOnce('task-definition.json') // task-definition
-            .mockReturnValueOnce('service-456')         // service
-            .mockReturnValueOnce('cluster-789')         // cluster
-            .mockReturnValueOnce('TRUE')                // wait-for-service-stability
-            .mockReturnValueOnce('60');                 // wait-for-minutes
-
-        mockEcsDescribeServices.mockImplementation(() => {
-            return {
-                promise() {
-                    return Promise.resolve({
-                        failures: [],
-                        services: [{
-                            status: 'ACTIVE',
-                            deploymentController: {
-                                type: 'CODE_DEPLOY'
-                            }
-                        }]
-                    });
-                }
-            };
-        });
-
-        await run();
-        expect(core.setFailed).toHaveBeenCalledTimes(0);
-
-        expect(mockEcsRegisterTaskDef).toHaveBeenNthCalledWith(1, { family: 'task-def-family'});
-        expect(core.setOutput).toHaveBeenNthCalledWith(1, 'task-definition-arn', 'task:def:arn');
-        expect(mockEcsDescribeServices).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            services: ['service-456']
-        });
-
-        expect(mockCodeDeployCreateDeployment).toHaveBeenNthCalledWith(1, {
-            applicationName: 'AppECS-cluster-789-service-456',
-            deploymentGroupName: 'DgpECS-cluster-789-service-456',
-            revision: {
-                revisionType: 'AppSpecContent',
-                appSpecContent: {
-                  content: JSON.stringify({
-                      Resources: [{
-                          TargetService: {
-                              Type: 'AWS::ECS::Service',
-                              Properties: {
-                                TaskDefinition: 'task:def:arn',
-                                LoadBalancerInfo: {
-                                    ContainerName: "web",
-                                    ContainerPort: 80
-                                }
-                              }
-                          }
-                      }]
-                    }),
-                  sha256: '0911d1e99f48b492e238d1284d8ddb805382d33e1d1fc74ffadf37d8b7e6d096'
-                }
-            }
-        });
-
-        expect(mockCodeDeployWaiter).toHaveBeenNthCalledWith(1, 'deploymentSuccessful', {
-            deploymentId: 'deployment-1',
-            $waiter: {
-                delay: 15,
-                maxAttempts: (
-                    60 +
-                    EXPECTED_CODE_DEPLOY_TERMINATION_WAIT_TIME +
-                    EXPECTED_CODE_DEPLOY_DEPLOYMENT_READY_WAIT_TIME
-                ) * 4
-            }
-        });
-
-        expect(mockEcsUpdateService).toHaveBeenCalledTimes(0);
-        expect(mockEcsWaiter).toHaveBeenCalledTimes(0);
-    });
-
-    test('registers the task definition contents and creates a CodeDeploy deployment, waits for max 6 hours', async () => {
-        core.getInput = jest
-            .fn()
-            .mockReturnValueOnce('task-definition.json') // task-definition
-            .mockReturnValueOnce('service-456')         // service
-            .mockReturnValueOnce('cluster-789')         // cluster
-            .mockReturnValueOnce('TRUE')                // wait-for-service-stability
-            .mockReturnValueOnce('1000');               // wait-for-minutes
-
-        mockEcsDescribeServices.mockImplementation(() => {
-            return {
-                promise() {
-                    return Promise.resolve({
-                        failures: [],
-                        services: [{
-                            status: 'ACTIVE',
-                            deploymentController: {
-                                type: 'CODE_DEPLOY'
-                            }
-                        }]
-                    });
-                }
-            };
-        });
-
-        await run();
-        expect(core.setFailed).toHaveBeenCalledTimes(0);
-
-        expect(mockEcsRegisterTaskDef).toHaveBeenNthCalledWith(1, { family: 'task-def-family'});
-        expect(core.setOutput).toHaveBeenNthCalledWith(1, 'task-definition-arn', 'task:def:arn');
-        expect(mockEcsDescribeServices).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            services: ['service-456']
-        });
-
-        expect(mockCodeDeployCreateDeployment).toHaveBeenNthCalledWith(1, {
-            applicationName: 'AppECS-cluster-789-service-456',
-            deploymentGroupName: 'DgpECS-cluster-789-service-456',
-            revision: {
-                revisionType: 'AppSpecContent',
-                appSpecContent: {
-                  content: JSON.stringify({
-                      Resources: [{
-                          TargetService: {
-                              Type: 'AWS::ECS::Service',
-                              Properties: {
-                                TaskDefinition: 'task:def:arn',
-                                LoadBalancerInfo: {
-                                    ContainerName: "web",
-                                    ContainerPort: 80
-                                }
-                              }
-                          }
-                      }]
-                    }),
-                  sha256: '0911d1e99f48b492e238d1284d8ddb805382d33e1d1fc74ffadf37d8b7e6d096'
-                }
-            }
-        });
-
-        expect(mockCodeDeployWaiter).toHaveBeenNthCalledWith(1, 'deploymentSuccessful', {
-            deploymentId: 'deployment-1',
-            $waiter: {
-                delay: 15,
-                maxAttempts: 6 * 60 * 4
-            }
-        });
-
-        expect(mockEcsUpdateService).toHaveBeenCalledTimes(0);
-        expect(mockEcsWaiter).toHaveBeenCalledTimes(0);
     });
 
     test('does not wait for a CodeDeploy deployment, parses JSON appspec file', async () => {
@@ -688,13 +387,7 @@ describe('Deploy to ECS', () => {
             .fn()
             .mockReturnValueOnce('task-definition.json') // task-definition
             .mockReturnValueOnce('service-456')         // service
-            .mockReturnValueOnce('cluster-789')         // cluster
-            .mockReturnValueOnce('false')               // wait-for-service-stability
-            .mockReturnValueOnce('')                    // wait-for-minutes
-            .mockReturnValueOnce('')                    // force-new-deployment
-            .mockReturnValueOnce('/hello/appspec.json') // codedeploy-appspec
-            .mockReturnValueOnce('MyApplication')       // codedeploy-application
-            .mockReturnValueOnce('MyDeploymentGroup');  // codedeploy-deployment-group
+            .mockReturnValueOnce('cluster-789');        // cluster
 
         fs.readFileSync.mockReturnValue(`
             {
@@ -768,52 +461,13 @@ describe('Deploy to ECS', () => {
 
         expect(mockEcsRegisterTaskDef).toHaveBeenNthCalledWith(1, { family: 'task-def-family'});
         expect(core.setOutput).toHaveBeenNthCalledWith(1, 'task-definition-arn', 'task:def:arn');
-        expect(mockEcsDescribeServices).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            services: ['service-456']
-        });
-
-        expect(mockCodeDeployCreateDeployment).toHaveBeenNthCalledWith(1, {
-            applicationName: 'MyApplication',
-            deploymentGroupName: 'MyDeploymentGroup',
-            revision: {
-                revisionType: 'AppSpecContent',
-                appSpecContent: {
-                  content: JSON.stringify({
-                      Resources: [{
-                          TargetService: {
-                              Type: 'AWS::ECS::Service',
-                              Properties: {
-                                TaskDefinition: 'task:def:arn',
-                                LoadBalancerInfo: {
-                                    ContainerName: "web",
-                                    ContainerPort: 80
-                                }
-                              }
-                          }
-                      }]
-                    }),
-                  sha256: '0911d1e99f48b492e238d1284d8ddb805382d33e1d1fc74ffadf37d8b7e6d096'
-                }
-            }
-        });
-
-        expect(mockCodeDeployWaiter).toHaveBeenCalledTimes(0);
-        expect(mockEcsUpdateService).toHaveBeenCalledTimes(0);
-        expect(mockEcsWaiter).toHaveBeenCalledTimes(0);
     });
 
-    test('registers the task definition contents and creates a CodeDeploy deployment with custom application, deployment group and description', async () => {
+    test('registers the task definition content ', async () => {
         core.getInput = jest
             .fn(input => {
                 return {
                     'task-definition': 'task-definition.json',
-                    'service': 'service-456',
-                    'cluster': 'cluster-789',
-                    'wait-for-service-stability': 'TRUE',
-                    'codedeploy-application': 'Custom-Application',
-                    'codedeploy-deployment-group': 'Custom-Deployment-Group',
-                    'codedeploy-deployment-description': 'Custom-Deployment'
                 }[input];
             });
 
@@ -838,53 +492,6 @@ describe('Deploy to ECS', () => {
 
         expect(mockEcsRegisterTaskDef).toHaveBeenNthCalledWith(1, { family: 'task-def-family'});
         expect(core.setOutput).toHaveBeenNthCalledWith(1, 'task-definition-arn', 'task:def:arn');
-        expect(mockEcsDescribeServices).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            services: ['service-456']
-        });
-
-        expect(mockCodeDeployCreateDeployment).toHaveBeenNthCalledWith(1, {
-            applicationName: 'Custom-Application',
-            deploymentGroupName: 'Custom-Deployment-Group',
-            description: 'Custom-Deployment',
-            revision: {
-                revisionType: 'AppSpecContent',
-                appSpecContent: {
-                    content: JSON.stringify({
-                        Resources: [{
-                            TargetService: {
-                                Type: 'AWS::ECS::Service',
-                                Properties: {
-                                    TaskDefinition: 'task:def:arn',
-                                    LoadBalancerInfo: {
-                                        ContainerName: "web",
-                                        ContainerPort: 80
-                                    }
-                                }
-                            }
-                        }]
-                    }),
-                    sha256: '0911d1e99f48b492e238d1284d8ddb805382d33e1d1fc74ffadf37d8b7e6d096'
-                }
-            }
-        });
-
-        expect(mockCodeDeployWaiter).toHaveBeenNthCalledWith(1, 'deploymentSuccessful', {
-            deploymentId: 'deployment-1',
-            $waiter: {
-                delay: 15,
-                maxAttempts: (
-                    EXPECTED_DEFAULT_WAIT_TIME +
-                    EXPECTED_CODE_DEPLOY_TERMINATION_WAIT_TIME +
-                    EXPECTED_CODE_DEPLOY_DEPLOYMENT_READY_WAIT_TIME
-                ) * 4
-            }
-        });
-
-        expect(mockEcsUpdateService).toHaveBeenCalledTimes(0);
-        expect(mockEcsWaiter).toHaveBeenCalledTimes(0);
-
-        expect(core.info).toBeCalledWith("Deployment started. Watch this deployment's progress in the AWS CodeDeploy console: https://console.aws.amazon.com/codesuite/codedeploy/deployments/deployment-1?region=fake-region");
     });
 
      test('registers the task definition contents at an absolute path', async () => {
@@ -912,101 +519,12 @@ describe('Deploy to ECS', () => {
         core.getInput = jest
             .fn()
             .mockReturnValueOnce('task-definition.json') // task-definition
-            .mockReturnValueOnce('service-456')         // service
-            .mockReturnValueOnce('cluster-789')         // cluster
-            .mockReturnValueOnce('TRUE');               // wait-for-service-stability
 
         await run();
         expect(core.setFailed).toHaveBeenCalledTimes(0);
 
         expect(mockEcsRegisterTaskDef).toHaveBeenNthCalledWith(1, { family: 'task-def-family'});
         expect(core.setOutput).toHaveBeenNthCalledWith(1, 'task-definition-arn', 'task:def:arn');
-        expect(mockEcsDescribeServices).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            services: ['service-456']
-        });
-        expect(mockEcsUpdateService).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            service: 'service-456',
-            taskDefinition: 'task:def:arn',
-            forceNewDeployment: false
-        });
-        expect(mockEcsWaiter).toHaveBeenNthCalledWith(1, 'servicesStable', {
-            services: ['service-456'],
-            cluster: 'cluster-789',
-            "$waiter": {
-                "delay": 15,
-                "maxAttempts": EXPECTED_DEFAULT_WAIT_TIME * 4,
-            },
-        });
-    });
-
-    test('waits for the service to be stable for specified minutes', async () => {
-        core.getInput = jest
-            .fn()
-            .mockReturnValueOnce('task-definition.json') // task-definition
-            .mockReturnValueOnce('service-456')         // service
-            .mockReturnValueOnce('cluster-789')         // cluster
-            .mockReturnValueOnce('TRUE')                // wait-for-service-stability
-            .mockReturnValueOnce('60');                     // wait-for-minutes
-
-        await run();
-        expect(core.setFailed).toHaveBeenCalledTimes(0);
-
-        expect(mockEcsRegisterTaskDef).toHaveBeenNthCalledWith(1, { family: 'task-def-family'});
-        expect(core.setOutput).toHaveBeenNthCalledWith(1, 'task-definition-arn', 'task:def:arn');
-        expect(mockEcsDescribeServices).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            services: ['service-456']
-        });
-        expect(mockEcsUpdateService).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            service: 'service-456',
-            taskDefinition: 'task:def:arn',
-            forceNewDeployment: false
-        });
-        expect(mockEcsWaiter).toHaveBeenNthCalledWith(1, 'servicesStable', {
-            services: ['service-456'],
-            cluster: 'cluster-789',
-            "$waiter": {
-                "delay": 15,
-                "maxAttempts": 60 * 4,
-            },
-        });
-    });
-
-    test('waits for the service to be stable for max 6 hours', async () => {
-        core.getInput = jest
-            .fn()
-            .mockReturnValueOnce('task-definition.json') // task-definition
-            .mockReturnValueOnce('service-456')         // service
-            .mockReturnValueOnce('cluster-789')         // cluster
-            .mockReturnValueOnce('TRUE')                // wait-for-service-stability
-            .mockReturnValueOnce('1000');                   // wait-for-minutes
-
-        await run();
-        expect(core.setFailed).toHaveBeenCalledTimes(0);
-
-        expect(mockEcsRegisterTaskDef).toHaveBeenNthCalledWith(1, { family: 'task-def-family'});
-        expect(core.setOutput).toHaveBeenNthCalledWith(1, 'task-definition-arn', 'task:def:arn');
-        expect(mockEcsDescribeServices).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            services: ['service-456']
-        });
-        expect(mockEcsUpdateService).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            service: 'service-456',
-            taskDefinition: 'task:def:arn',
-            forceNewDeployment: false
-        });
-        expect(mockEcsWaiter).toHaveBeenNthCalledWith(1, 'servicesStable', {
-            services: ['service-456'],
-            cluster: 'cluster-789',
-            "$waiter": {
-                "delay": 15,
-                "maxAttempts": 6 * 60 * 4,
-            },
-        });
     });
 
     test('force new deployment', async () => {
@@ -1024,16 +542,6 @@ describe('Deploy to ECS', () => {
 
         expect(mockEcsRegisterTaskDef).toHaveBeenNthCalledWith(1, { family: 'task-def-family'});
         expect(core.setOutput).toHaveBeenNthCalledWith(1, 'task-definition-arn', 'task:def:arn');
-        expect(mockEcsDescribeServices).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            services: ['service-456']
-        });
-        expect(mockEcsUpdateService).toHaveBeenNthCalledWith(1, {
-            cluster: 'cluster-789',
-            service: 'service-456',
-            taskDefinition: 'task:def:arn',
-            forceNewDeployment: true
-        });
     });
 
     test('defaults to the default cluster', async () => {
@@ -1047,16 +555,6 @@ describe('Deploy to ECS', () => {
 
         expect(mockEcsRegisterTaskDef).toHaveBeenNthCalledWith(1, { family: 'task-def-family'});
         expect(core.setOutput).toHaveBeenNthCalledWith(1, 'task-definition-arn', 'task:def:arn');
-        expect(mockEcsDescribeServices).toHaveBeenNthCalledWith(1, {
-            cluster: 'default',
-            services: ['service-456']
-        });
-        expect(mockEcsUpdateService).toHaveBeenNthCalledWith(1, {
-            cluster: 'default',
-            service: 'service-456',
-            taskDefinition: 'task:def:arn',
-            forceNewDeployment: false
-        });
     });
 
     test('does not update service if none specified', async () => {
@@ -1069,92 +567,6 @@ describe('Deploy to ECS', () => {
 
         expect(mockEcsRegisterTaskDef).toHaveBeenNthCalledWith(1, { family: 'task-def-family'});
         expect(core.setOutput).toHaveBeenNthCalledWith(1, 'task-definition-arn', 'task:def:arn');
-        expect(mockEcsDescribeServices).toHaveBeenCalledTimes(0);
-        expect(mockEcsUpdateService).toHaveBeenCalledTimes(0);
-    });
-
-    test('error caught if AppSpec file is not formatted correctly', async () => {
-        mockEcsDescribeServices.mockImplementation(() => {
-            return {
-                promise() {
-                    return Promise.resolve({
-                        failures: [],
-                        services: [{
-                            status: 'ACTIVE',
-                            deploymentController: {
-                                type: 'CODE_DEPLOY'
-                            }
-                        }]
-                    });
-                }
-            };
-        });
-        fs.readFileSync.mockReturnValue("hello: world");
-
-        await run();
-
-        expect(core.setFailed).toBeCalledWith("AppSpec file must include property 'resources'");
-    });
-
-    test('error is caught if service does not exist', async () => {
-        mockEcsDescribeServices.mockImplementation(() => {
-            return {
-                promise() {
-                    return Promise.resolve({
-                        failures: [{
-                            reason: 'MISSING',
-                            arn: 'hello'
-                        }],
-                        services: []
-                    });
-                }
-            };
-        });
-
-        await run();
-
-        expect(core.setFailed).toBeCalledWith('hello is MISSING');
-    });
-
-    test('error is caught if service is inactive', async () => {
-        mockEcsDescribeServices.mockImplementation(() => {
-            return {
-                promise() {
-                    return Promise.resolve({
-                        failures: [],
-                        services: [{
-                            status: 'INACTIVE'
-                        }]
-                    });
-                }
-            };
-        });
-
-        await run();
-
-        expect(core.setFailed).toBeCalledWith('Service is INACTIVE');
-    });
-
-    test('error is caught if service uses external deployment controller', async () => {
-        mockEcsDescribeServices.mockImplementation(() => {
-            return {
-                promise() {
-                    return Promise.resolve({
-                        failures: [],
-                        services: [{
-                            status: 'ACTIVE',
-                            deploymentController: {
-                                type: 'EXTERNAL'
-                            }
-                        }]
-                    });
-                }
-            };
-        });
-
-        await run();
-
-        expect(core.setFailed).toBeCalledWith('Unsupported deployment controller: EXTERNAL');
     });
 
     test('error is caught if task def registration fails', async () => {
